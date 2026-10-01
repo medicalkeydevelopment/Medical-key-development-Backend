@@ -94,7 +94,7 @@ public class LocationController {
             const body={userId:'test-user'};
             if(c){ body.latitude=c.latitude; body.longitude=c.longitude; body.accuracy=c.accuracy; }
             try{
-              const r=await fetch('/api/location/track',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+              const r=await fetch('/location',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
               render(await r.json());
             }catch(err){ out.innerHTML='<span class="err">Backend error: '+err.message+'</span>'; }
             finally{ btn.disabled=false; }
