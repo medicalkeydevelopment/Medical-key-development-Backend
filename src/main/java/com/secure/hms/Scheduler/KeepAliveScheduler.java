@@ -25,6 +25,9 @@ public class KeepAliveScheduler {
             .connectTimeout(Duration.ofSeconds(10))
             .build();
 
+    
+    
+    
     @Value("${app.keep-alive.url}")
     private String keepAliveUrl;
 
