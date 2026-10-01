@@ -22,7 +22,7 @@ public class LocationController {
     }
 
     // ---- Student submits location: read IP, hand off to service, return success ----
-    @PostMapping("/money")
+    @PostMapping("/location")
     public ResponseEntity<Map<String, String>> track(@RequestBody(required = false) Map<String, Object> body,
                                                       HttpServletRequest httpRequest) {
         String clientIp = getClientIp(httpRequest);
