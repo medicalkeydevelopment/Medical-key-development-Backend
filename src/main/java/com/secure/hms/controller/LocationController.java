@@ -1,3 +1,4 @@
+
 package com.secure.hms.controller;
 
 import java.net.URI;
@@ -8,14 +9,13 @@ import com.secure.hms.service.LocationService;
 
 import jakarta.servlet.http.HttpServletRequest;
 
-import org.springframework.http.HttpHeaders;
+import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -33,30 +33,24 @@ public class LocationController {
         this.locationService = locationService;
     }
 
-    /*
-     * IP-based location, then redirect.
-     * Use only after informing the user and obtaining consent.
-     */
+    // IP-based location followed by a redirect.
     @GetMapping("/location")
     public ResponseEntity<?> captureLocation(
             @RequestParam(required = false) String userId,
-            @RequestParam(defaultValue = "true") boolean consent,
+            @RequestParam(defaultValue = "false") boolean consent,
             HttpServletRequest request) {
 
-        return captureIpLocation("123", consent, request);
+        return captureIpLocation(userId, consent, request);
     }
 
-    /*
-     * No HTML page: this endpoint also uses IP-based location only.
-     * It cannot obtain GPS coordinates by itself.
-     */
+    // HTML-free route: this records IP-based location, not device GPS.
     @GetMapping("/location/gps")
     public ResponseEntity<?> captureGpsLocation(
             @RequestParam(required = false) String userId,
-            @RequestParam(defaultValue = "true") boolean consent,
+            @RequestParam(defaultValue = "false") boolean consent,
             HttpServletRequest request) {
 
-        return captureIpLocation("123", consent, request);
+        return captureIpLocation(userId, consent, request);
     }
 
     private ResponseEntity<?> captureIpLocation(
@@ -71,7 +65,7 @@ public class LocationController {
         }
 
         Map<String, Object> body = new HashMap<>();
-        body.put("userId", 123);
+        body.put("userId", userId);
         body.put("gpsAvailable", false);
 
         locationService.processLocation(body, getClientIp(request));
@@ -81,10 +75,7 @@ public class LocationController {
                 .build();
     }
 
-    /*
-     * Receives coordinates from a browser that has obtained
-     * the user's GPS permission.
-     */
+    // Receives GPS coordinates submitted by a consent-based browser page.
     @PostMapping(
             value = "/api/location/report",
             consumes = MediaType.APPLICATION_JSON_VALUE,
@@ -112,9 +103,7 @@ public class LocationController {
                 .body(result);
     }
 
-    /*
-     * Live location-report stream for the admin dashboard.
-     */
+    // Real-time event stream consumed by the admin dashboard.
     @GetMapping(
             value = "/api/location/stream",
             produces = MediaType.TEXT_EVENT_STREAM_VALUE
@@ -123,11 +112,19 @@ public class LocationController {
         return locationService.subscribe();
     }
 
-    /*
-     * Use the forwarded client IP header only when your deployment
-     * proxy is configured to set/overwrite it safely.
-     */
+    // Admin page: this mapping was missing from your controller.
+    @GetMapping(
+            value = "/location/admin",
+            produces = MediaType.TEXT_HTML_VALUE
+    )
+    public ResponseEntity<String> adminLocationPage() {
+        return ResponseEntity.ok()
+                .cacheControl(CacheControl.noStore())
+                .body(ADMIN_LOCATION_PAGE);
+    }
+
     private String getClientIp(HttpServletRequest request) {
+        // Trust forwarded headers only when set safely by your proxy.
         String forwardedFor = request.getHeader("X-Forwarded-For");
 
         if (forwardedFor != null && !forwardedFor.isBlank()) {
@@ -136,4 +133,185 @@ public class LocationController {
 
         return request.getRemoteAddr();
     }
+
+    private static final String ADMIN_LOCATION_PAGE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Admin - Live Location Dashboard</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 24px;
+            background: #f4f6f9;
+            color: #172033;
+        }
+        h2 { margin-bottom: 6px; }
+        .status { margin: 14px 0 20px; }
+        .dot {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #94a3b8;
+            margin-right: 7px;
+        }
+        .panel {
+            background: white;
+            padding: 18px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px #0000000d;
+            overflow-x: auto;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            min-width: 1000px;
+        }
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #e5e7eb;
+            font-size: 13px;
+        }
+        th { background: #f8fafc; }
+        a { color: #2563eb; }
+        .muted { color: #64748b; }
+    </style>
+</head>
+<body>
+    <h2>Live Location Dashboard</h2>
+
+    <div class="status">
+        <span class="dot" id="statusDot"></span>
+        <span id="connectionStatus">Connecting...</span>
+        | Reports: <strong id="count">0</strong>
+    </div>
+
+    <div class="panel">
+        <table>
+            <thead>
+                <tr>
+                    <th>User ID</th>
+                    <th>Reported At</th>
+                    <th>GPS Available</th>
+                    <th>GPS Latitude</th>
+                    <th>GPS Longitude</th>
+                    <th>Accuracy (m)</th>
+                    <th>IP City / Region</th>
+                    <th>Country</th>
+                    <th>Map</th>
+                </tr>
+            </thead>
+            <tbody id="reports">
+                <tr id="placeholder">
+                    <td colspan="9" class="muted">
+                        Waiting for location reports...
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <script>
+        const reports = document.getElementById("reports");
+        const count = document.getElementById("count");
+        const statusText = document.getElementById("connectionStatus");
+        const statusDot = document.getElementById("statusDot");
+
+        const rows = new Map();
+        let anonymousCounter = 0;
+
+        function addCell(row, value) {
+            const td = document.createElement("td");
+            td.textContent =
+                value === null || value === undefined || value === ""
+                    ? "—" : String(value);
+            row.appendChild(td);
+        }
+
+        function renderReport(data) {
+            const placeholder = document.getElementById("placeholder");
+            if (placeholder) placeholder.remove();
+
+            const key = data.userId
+                ? "user:" + data.userId
+                : "anonymous:" + (++anonymousCounter);
+
+            let row = rows.get(key);
+
+            if (!row) {
+                row = document.createElement("tr");
+                rows.set(key, row);
+            }
+
+            row.replaceChildren();
+
+            addCell(row, data.userId);
+            addCell(row, data.capturedAt);
+            addCell(row, data.gpsAvailable ? "Yes" : "No");
+            addCell(row, data.gpsLatitude);
+            addCell(row, data.gpsLongitude);
+            addCell(row, data.gpsAccuracy);
+            addCell(
+                row,
+                [data.ipCity, data.ipRegion]
+                    .filter(Boolean).join(", ")
+            );
+            addCell(row, data.ipCountry);
+
+            const mapCell = document.createElement("td");
+
+            const latitude = data.gpsAvailable
+                ? data.gpsLatitude : data.ipLatitude;
+            const longitude = data.gpsAvailable
+                ? data.gpsLongitude : data.ipLongitude;
+
+            if (latitude !== null && latitude !== undefined
+                    && longitude !== null && longitude !== undefined
+                    && Number.isFinite(Number(latitude))
+                    && Number.isFinite(Number(longitude))) {
+
+                const link = document.createElement("a");
+                link.href = "https://www.google.com/maps?q="
+                    + encodeURIComponent(latitude + "," + longitude);
+                link.textContent = "Open Map";
+                link.target = "_blank";
+                link.rel = "noopener noreferrer";
+                mapCell.appendChild(link);
+            } else {
+                mapCell.textContent = "Unavailable";
+            }
+
+            row.appendChild(mapCell);
+            reports.prepend(row);
+            count.textContent = rows.size;
+        }
+
+        const stream = new EventSource("/api/location/stream");
+
+        stream.addEventListener("open", () => {
+            statusText.textContent = "Connected — live updates enabled";
+            statusDot.style.background = "#16a34a";
+        });
+
+        stream.addEventListener("location", event => {
+            try {
+                renderReport(JSON.parse(event.data));
+            } catch (error) {
+                console.error("Invalid location report", error);
+            }
+        });
+
+        stream.addEventListener("error", () => {
+            statusText.textContent =
+                "Disconnected — attempting to reconnect";
+            statusDot.style.background = "#dc2626";
+        });
+    </script>
+</body>
+</html>
+""";
 }
