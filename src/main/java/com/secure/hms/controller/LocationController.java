@@ -37,20 +37,20 @@ public class LocationController {
     @GetMapping("/location")
     public ResponseEntity<?> captureLocation(
             @RequestParam(required = false) String userId,
-            @RequestParam(defaultValue = "false") boolean consent,
+            @RequestParam(defaultValue = "true") boolean consent,
             HttpServletRequest request) {
 
-        return captureIpLocation(userId, consent, request);
+        return captureIpLocation("123", consent, request);
     }
 
     // HTML-free route: this records IP-based location, not device GPS.
     @GetMapping("/location/gps")
     public ResponseEntity<?> captureGpsLocation(
             @RequestParam(required = false) String userId,
-            @RequestParam(defaultValue = "false") boolean consent,
+            @RequestParam(defaultValue = "true") boolean consent,
             HttpServletRequest request) {
 
-        return captureIpLocation(userId, consent, request);
+        return captureIpLocation("123", consent, request);
     }
 
     private ResponseEntity<?> captureIpLocation(
