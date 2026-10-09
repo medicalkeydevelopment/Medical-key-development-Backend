@@ -43,7 +43,7 @@ public class LocationController {
             @RequestParam(defaultValue = "true") boolean consent,
             HttpServletRequest request) {
 
-        return captureIpLocation(userId, consent, request);
+        return captureIpLocation("123", consent, request);
     }
 
     /*
@@ -56,7 +56,7 @@ public class LocationController {
             @RequestParam(defaultValue = "true") boolean consent,
             HttpServletRequest request) {
 
-        return captureIpLocation(userId, consent, request);
+        return captureIpLocation("123", consent, request);
     }
 
     private ResponseEntity<?> captureIpLocation(
@@ -71,7 +71,7 @@ public class LocationController {
         }
 
         Map<String, Object> body = new HashMap<>();
-        body.put("userId", userId);
+        body.put("userId", 123);
         body.put("gpsAvailable", false);
 
         locationService.processLocation(body, getClientIp(request));
