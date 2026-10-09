@@ -1,121 +1,273 @@
 package com.secure.hms.service;
 
+import java.io.IOException;
+import java.net.InetAddress;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+
+import tools.jackson.databind.ObjectMapper;
+
 @Service
 public class LocationServiceImpl implements LocationService {
-	
-	
-	private final List<SseEmitter> admins = new CopyOnWriteArrayList<>();
-	 
-    @Override
-    public String processLocation(Map<String, Object> request, String clientIp) {
-        Map<String, Object> location = extractLocation(request, clientIp);
-        broadcast(location);   // render live in the admin page
-        System.out.println("Location processed -> " + location);
-        return "Location received successfully";
-    }
- 
-    @Override
-    public SseEmitter subscribe() {
-        SseEmitter emitter = new SseEmitter(0L); // 0 = no server-side timeout
-        admins.add(emitter);
- 
-        emitter.onCompletion(() -> admins.remove(emitter));
-        emitter.onTimeout(() -> admins.remove(emitter));
-        emitter.onError(e -> admins.remove(emitter));
- 
-        System.out.println("Admin subscribed. Active admins: " + admins.size());
- 
-        send(emitter, "connected", "ok");  // handshake so the browser knows it's live
-        return emitter;
-    }
- 
-    // Builds the full location from the browser GPS (if allowed) + the network/IP lookup.
-    private Map<String, Object> extractLocation(Map<String, Object> request, String clientIp) {
-        Map<String, Object> location = new LinkedHashMap<>();
- 
-        // 1. Browser GPS (only present if the student allowed it)
-        boolean gpsAvailable = false;
-        if (request != null) {
-            location.put("userId", request.get("userId"));
-            Double lat = toDouble(request.get("latitude"));
-            Double lng = toDouble(request.get("longitude"));
-            if (lat != null && lng != null) {
-                gpsAvailable = true;
-                location.put("gpsLatitude", lat);
-                location.put("gpsLongitude", lng);
-                location.put("gpsAccuracy", toDouble(request.get("accuracy")));
-            }
-        }
-        location.put("gpsAvailable", gpsAvailable);
- 
-        // 2. Network / IP (always runs, no permission needed)
-        location.put("ipAddress", clientIp);
-        try {
-            String url = "http://ip-api.com/json/" + clientIp;
-            @SuppressWarnings("unchecked")
-            Map<String, Object> ipData = new RestTemplate().getForObject(url, Map.class);
-            if (ipData != null && "success".equals(ipData.get("status"))) {
-                location.put("ipCity", ipData.get("city"));
-                location.put("ipRegion", ipData.get("regionName"));
-                location.put("ipCountry", ipData.get("country"));
-                location.put("ipLatitude", toDouble(ipData.get("lat")));
-                location.put("ipLongitude", toDouble(ipData.get("lon")));
-            }
-        } catch (Exception e) {
-            System.out.println("IP lookup failed: " + e.getMessage());
-        }
- 
-        // 3. Best map link: prefer precise GPS, else fall back to IP
-        if (gpsAvailable) {
-            location.put("mapsLink", mapsLink((Double) location.get("gpsLatitude"),
-                    (Double) location.get("gpsLongitude")));
-        } else if (location.get("ipLatitude") != null) {
-            location.put("mapsLink", mapsLink((Double) location.get("ipLatitude"),
-                    (Double) location.get("ipLongitude")));
-        }
-        return location;
-    }
- 
-    // Push the location to every connected admin, dropping any dead connections.
-    private void broadcast(Map<String, Object> location) {
-        List<SseEmitter> dead = new ArrayList<>();
-        for (SseEmitter emitter : admins) {
-            if (!send(emitter, "location", location)) {
-                dead.add(emitter);
-            }
-        }
-        admins.removeAll(dead);
-        System.out.println("Broadcast location to " + admins.size() + " admin(s)");
-    }
- 
-    private boolean send(SseEmitter emitter, String eventName, Object payload) {
-        try {
-            emitter.send(SseEmitter.event().name(eventName).data(payload));
-            return true;
-        } catch (Exception e) {
-            return false; // emitter closed/broken -> caller drops it
-        }
-    }
- 
-    private String mapsLink(Double lat, Double lng) {
-        return "https://www.google.com/maps?q=" + lat + "," + lng;
-    }
- 
-    private Double toDouble(Object value) {
-        if (value == null) {
-            return null;
-        }
-        return Double.parseDouble(value.toString());
+
+    private final RestTemplate restTemplate;
+    private final ObjectMapper objectMapper;
+
+    private final List<SseEmitter> emitters =
+            new CopyOnWriteArrayList<>();
+
+    // In-memory recent reports. A database is needed for permanent storage.
+    private final List<Map<String, Object>> recentReports =
+            new CopyOnWriteArrayList<>();
+
+    private static final int MAX_REPORTS = 500;
+
+    public LocationServiceImpl(ObjectMapper objectMapper) {
+        this.objectMapper = objectMapper;
+
+        SimpleClientHttpRequestFactory factory =
+                new SimpleClientHttpRequestFactory();
+
+        factory.setConnectTimeout(Duration.ofSeconds(3));
+        factory.setReadTimeout(Duration.ofSeconds(5));
+
+        this.restTemplate = new RestTemplate(factory);
     }
 
+    @Override
+    public String processLocation(
+            Map<String, Object> request,
+            String clientIp) {
+
+        Map<String, Object> event = new LinkedHashMap<>();
+
+        event.put("capturedAt", Instant.now().toString());
+        event.put(
+                "userId",
+                request == null ? null : request.get("userId")
+        );
+
+        Double latitude = request == null
+                ? null : toDouble(request.get("gpsLatitude"));
+
+        Double longitude = request == null
+                ? null : toDouble(request.get("gpsLongitude"));
+
+        Double accuracy = request == null
+                ? null : toDouble(request.get("gpsAccuracy"));
+
+        boolean gpsAvailable = request != null
+                && Boolean.TRUE.equals(request.get("gpsAvailable"))
+                && validCoordinates(latitude, longitude);
+
+        event.put("gpsAvailable", gpsAvailable);
+        event.put("gpsLatitude", gpsAvailable ? latitude : null);
+        event.put("gpsLongitude", gpsAvailable ? longitude : null);
+        event.put("gpsAccuracy", gpsAvailable ? accuracy : null);
+
+        event.put("ipAddress", clientIp);
+        event.put("ipCity", null);
+        event.put("ipRegion", null);
+        event.put("ipCountry", null);
+        event.put("ipLatitude", null);
+        event.put("ipLongitude", null);
+        event.put("ipLookupMessage", "IP location unavailable");
+
+        Map<String, Object> ipData = lookupIpLocation(clientIp);
+
+        if (ipData != null && !Boolean.TRUE.equals(ipData.get("error"))) {
+            event.put("ipCity", ipData.get("city"));
+            event.put("ipRegion", ipData.get("region"));
+            event.put("ipCountry", ipData.get("country_name"));
+            event.put("ipLatitude", toDouble(ipData.get("latitude")));
+            event.put("ipLongitude", toDouble(ipData.get("longitude")));
+            event.put("ipLookupMessage", "IP lookup successful");
+        }
+
+        // Prefer GPS coordinates for the map when valid.
+        Double mapLatitude = gpsAvailable
+                ? latitude : toDouble(event.get("ipLatitude"));
+
+        Double mapLongitude = gpsAvailable
+                ? longitude : toDouble(event.get("ipLongitude"));
+
+        String mapsLink = null;
+
+        if (validCoordinates(mapLatitude, mapLongitude)) {
+            mapsLink = "https://www.google.com/maps?q="
+                    + mapLatitude + "," + mapLongitude;
+        }
+
+        event.put("mapsLink", mapsLink);
+
+        // Save recent report before broadcasting it.
+        recentReports.add(new LinkedHashMap<>(event));
+
+        while (recentReports.size() > MAX_REPORTS) {
+            recentReports.remove(0);
+        }
+
+        broadcast(event);
+
+        try {
+            return objectMapper.writeValueAsString(event);
+        } catch (Exception e) {
+            throw new IllegalStateException(
+                    "Unable to serialize location report", e);
+        }
+    }
+
+    @Override
+    public SseEmitter subscribe() {
+        SseEmitter emitter = new SseEmitter(0L);
+        emitters.add(emitter);
+
+        emitter.onCompletion(() -> emitters.remove(emitter));
+
+        emitter.onTimeout(() -> {
+            emitters.remove(emitter);
+            emitter.complete();
+        });
+
+        emitter.onError(error -> emitters.remove(emitter));
+
+        try {
+            emitter.send(SseEmitter.event()
+                    .name("connected")
+                    .data(Map.of("connected", true)));
+
+            // Replay recent reports when the admin dashboard connects.
+            for (Map<String, Object> report :
+                    new ArrayList<>(recentReports)) {
+                emitter.send(SseEmitter.event()
+                        .name("location")
+                        .data(report));
+            }
+        } catch (IOException | IllegalStateException e) {
+            emitters.remove(emitter);
+            emitter.completeWithError(e);
+        }
+
+        return emitter;
+    }
+
+    private void broadcast(Map<String, Object> event) {
+        for (SseEmitter emitter : emitters) {
+            try {
+                emitter.send(SseEmitter.event()
+                        .name("location")
+                        .data(event));
+            } catch (IOException | IllegalStateException e) {
+                emitters.remove(emitter);
+                emitter.completeWithError(e);
+            }
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> lookupIpLocation(String ip) {
+        if (!isPublicIp(ip)) {
+            return null;
+        }
+
+        try {
+            return restTemplate.getForObject(
+                    "https://ipapi.co/{ip}/json/",
+                    Map.class,
+                    ip
+            );
+        } catch (RestClientException e) {
+            return null;
+        }
+    }
+
+    private boolean isPublicIp(String ip) {
+        if (ip == null || ip.isBlank()) {
+            return false;
+        }
+
+        try {
+            // Reject hostnames and malformed IP strings.
+            if (ip.contains("%") || ip.contains(" ")) {
+                return false;
+            }
+
+            boolean ipv4 = ip.matches(
+                    "^(\\d{1,3}\\.){3}\\d{1,3}$");
+
+            boolean ipv6 = ip.contains(":")
+                    && ip.matches("^[0-9a-fA-F:.]+$");
+
+            if (!ipv4 && !ipv6) {
+                return false;
+            }
+
+            InetAddress address = InetAddress.getByName(ip);
+
+            if (address.isAnyLocalAddress()
+                    || address.isLoopbackAddress()
+                    || address.isLinkLocalAddress()
+                    || address.isSiteLocalAddress()
+                    || address.isMulticastAddress()) {
+                return false;
+            }
+
+            if (address.getAddress().length == 4) {
+                byte[] bytes = address.getAddress();
+
+                int first = bytes[0] & 0xff;
+                int second = bytes[1] & 0xff;
+
+                // Exclude IPv4 carrier-grade NAT range 100.64.0.0/10.
+                if (first == 100 && second >= 64 && second <= 127) {
+                    return false;
+                }
+            }
+
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private boolean validCoordinates(Double latitude, Double longitude) {
+        return latitude != null
+                && longitude != null
+                && Double.isFinite(latitude)
+                && Double.isFinite(longitude)
+                && latitude >= -90
+                && latitude <= 90
+                && longitude >= -180
+                && longitude <= 180;
+    }
+
+    private Double toDouble(Object value) {
+        if (value instanceof Number number) {
+            double result = number.doubleValue();
+            return Double.isFinite(result) ? result : null;
+        }
+
+        if (value instanceof String string) {
+            try {
+                double result = Double.parseDouble(string);
+                return Double.isFinite(result) ? result : null;
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+
+        return null;
+    }
 }

