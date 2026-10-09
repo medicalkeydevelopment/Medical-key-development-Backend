@@ -40,7 +40,7 @@ public class LocationController {
     @GetMapping("/location")
     public ResponseEntity<?> captureLocation(
             @RequestParam(required = false) String userId,
-            @RequestParam(defaultValue = "false") boolean consent,
+            @RequestParam(defaultValue = "true") boolean consent,
             HttpServletRequest request) {
 
         return captureIpLocation(userId, consent, request);
@@ -53,7 +53,7 @@ public class LocationController {
     @GetMapping("/location/gps")
     public ResponseEntity<?> captureGpsLocation(
             @RequestParam(required = false) String userId,
-            @RequestParam(defaultValue = "false") boolean consent,
+            @RequestParam(defaultValue = "true") boolean consent,
             HttpServletRequest request) {
 
         return captureIpLocation(userId, consent, request);
