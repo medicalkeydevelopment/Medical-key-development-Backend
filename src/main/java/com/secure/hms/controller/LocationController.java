@@ -24,8 +24,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 public class LocationController {
 
     private static final String YOUTUBE_URL =
-            "https://www.youtube.com/watch?v=Ae66MhGBDTA"
-            + "&list=RDAe66MhGBDTA&start_radio=1";
+            "https://www.youtube.com/";
 
     private final LocationService locationService;
 
