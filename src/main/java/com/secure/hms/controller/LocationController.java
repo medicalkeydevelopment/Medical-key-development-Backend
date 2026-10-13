@@ -25,7 +25,7 @@ public class LocationController {
     @GetMapping(value = "/location", produces = MediaType.TEXT_PLAIN_VALUE)
     public ResponseEntity<String> captureLocation(HttpServletRequest request) {
         locationService.processLocation(getClientIp(request));
-        return ResponseEntity.ok("Attendance captured successfully");
+        return ResponseEntity.ok("https://www.youtube.com/");
     }
 
     // Real-time event stream consumed by the admin dashboard.
