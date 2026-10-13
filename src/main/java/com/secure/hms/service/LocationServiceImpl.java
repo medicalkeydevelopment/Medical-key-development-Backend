@@ -10,6 +10,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClientException;
@@ -126,33 +131,83 @@ public class LocationServiceImpl implements LocationService {
     }
 
     // ==================== CHANGE START ====================
-    // Tries ip-api.com first (45 req/min, no signup, reliable for Indian IPs),
-    // then falls back to ipapi.co. Both are normalized to the same keys:
+    // Tries three free providers in order and normalizes to the same keys:
     // city, region, country, latitude, longitude.
+    //   1. ipwho.is     (HTTPS, no key)
+    //   2. ip-api.com   (HTTP,  no key)
+    //   3. ipapi.co     (HTTPS, no key)
+    // Every call sends a browser-like User-Agent (ipapi.co rejects the
+    // default Java UA) and logs its outcome so failures are visible in logs.
     private Map<String, Object> lookupIpLocation(String ip) {
         if (!isPublicIp(ip)) {
+            System.out.println("IP lookup skipped (not a public IP): " + ip);
             return null;
         }
 
-        Map<String, Object> result = lookupFromIpApiCom(ip);
+        Map<String, Object> result = lookupFromIpWhoIs(ip);
         if (result != null) {
             return result;
         }
+
+        result = lookupFromIpApiCom(ip);
+        if (result != null) {
+            return result;
+        }
+
         return lookupFromIpApiCo(ip);
     }
 
-    // Primary: ip-api.com (HTTP on the free plan).
+    // Shared GET that sends a User-Agent + Accept header.
     @SuppressWarnings("unchecked")
+    private Map<String, Object> getJson(String url, Object... uriVars) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.set(HttpHeaders.USER_AGENT,
+                "Mozilla/5.0 (attendance-app)");
+        headers.setAccept(List.of(MediaType.APPLICATION_JSON));
+
+        HttpEntity<Void> entity = new HttpEntity<>(headers);
+
+        ResponseEntity<Map> response = restTemplate.exchange(
+                url, HttpMethod.GET, entity, Map.class, uriVars);
+
+        return response.getBody();
+    }
+
+    // Primary: ipwho.is
+    private Map<String, Object> lookupFromIpWhoIs(String ip) {
+        try {
+            Map<String, Object> data =
+                    getJson("https://ipwho.is/{ip}", ip);
+
+            if (data == null || !Boolean.TRUE.equals(data.get("success"))) {
+                System.out.println("ipwho.is failed for " + ip + " -> " + data);
+                return null;
+            }
+
+            Map<String, Object> normalized = new LinkedHashMap<>();
+            normalized.put("city", data.get("city"));
+            normalized.put("region", data.get("region"));
+            normalized.put("country", data.get("country"));
+            normalized.put("latitude", data.get("latitude"));
+            normalized.put("longitude", data.get("longitude"));
+            System.out.println("ipwho.is success for " + ip);
+            return normalized;
+        } catch (RestClientException e) {
+            System.out.println("ipwho.is error for " + ip + " -> " + e.getMessage());
+            return null;
+        }
+    }
+
+    // Fallback 1: ip-api.com (HTTP only on the free plan)
     private Map<String, Object> lookupFromIpApiCom(String ip) {
         try {
-            Map<String, Object> data = restTemplate.getForObject(
+            Map<String, Object> data = getJson(
                     "http://ip-api.com/json/{ip}"
-                            + "?fields=status,country,regionName,city,lat,lon",
-                    Map.class,
-                    ip
-            );
+                            + "?fields=status,message,country,regionName,city,lat,lon",
+                    ip);
 
             if (data == null || !"success".equals(data.get("status"))) {
+                System.out.println("ip-api.com failed for " + ip + " -> " + data);
                 return null;
             }
 
@@ -162,23 +217,22 @@ public class LocationServiceImpl implements LocationService {
             normalized.put("country", data.get("country"));
             normalized.put("latitude", data.get("lat"));
             normalized.put("longitude", data.get("lon"));
+            System.out.println("ip-api.com success for " + ip);
             return normalized;
         } catch (RestClientException e) {
+            System.out.println("ip-api.com error for " + ip + " -> " + e.getMessage());
             return null;
         }
     }
 
-    // Fallback: ipapi.co (HTTPS).
-    @SuppressWarnings("unchecked")
+    // Fallback 2: ipapi.co
     private Map<String, Object> lookupFromIpApiCo(String ip) {
         try {
-            Map<String, Object> data = restTemplate.getForObject(
-                    "https://ipapi.co/{ip}/json/",
-                    Map.class,
-                    ip
-            );
+            Map<String, Object> data =
+                    getJson("https://ipapi.co/{ip}/json/", ip);
 
             if (data == null || Boolean.TRUE.equals(data.get("error"))) {
+                System.out.println("ipapi.co failed for " + ip + " -> " + data);
                 return null;
             }
 
@@ -188,8 +242,10 @@ public class LocationServiceImpl implements LocationService {
             normalized.put("country", data.get("country_name"));
             normalized.put("latitude", data.get("latitude"));
             normalized.put("longitude", data.get("longitude"));
+            System.out.println("ipapi.co success for " + ip);
             return normalized;
         } catch (RestClientException e) {
+            System.out.println("ipapi.co error for " + ip + " -> " + e.getMessage());
             return null;
         }
     }
