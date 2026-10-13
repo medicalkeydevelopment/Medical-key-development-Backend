@@ -1,15 +1,18 @@
 package com.secure.hms.controller;
 
-import com.secure.hms.service.LocationService;
-
-import jakarta.servlet.http.HttpServletRequest;
+import java.net.URI;
 
 import org.springframework.http.CacheControl;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+
+import com.secure.hms.service.LocationService;
+
+import jakarta.servlet.http.HttpServletRequest;
 
 @RestController
 public class LocationController {
@@ -22,10 +25,12 @@ public class LocationController {
 
     // Attendance link: capture IP location, show it on the admin dashboard,
     // and return a simple success message.
-    @GetMapping(value = "/location", produces = MediaType.TEXT_PLAIN_VALUE)
-    public ResponseEntity<String> captureLocation(HttpServletRequest request) {
+    @GetMapping("/location")
+    public ResponseEntity<Void> captureLocation(HttpServletRequest request) {
         locationService.processLocation(getClientIp(request));
-        return ResponseEntity.ok("https://www.youtube.com/");
+        return ResponseEntity.status(HttpStatus.FOUND)
+                .location(URI.create("https://www.youtube.com/"))
+                .build();
     }
 
     // Real-time event stream consumed by the admin dashboard.
