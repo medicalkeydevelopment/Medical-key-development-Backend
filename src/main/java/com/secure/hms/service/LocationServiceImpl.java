@@ -54,12 +54,13 @@ public class LocationServiceImpl implements LocationService {
         event.put("ipLongitude", null);
         event.put("ipLookupMessage", "IP location unavailable");
 
+        // Normalized result: city, region, country, latitude, longitude.
         Map<String, Object> ipData = lookupIpLocation(clientIp);
 
-        if (ipData != null && !Boolean.TRUE.equals(ipData.get("error"))) {
+        if (ipData != null) {
             event.put("ipCity", ipData.get("city"));
             event.put("ipRegion", ipData.get("region"));
-            event.put("ipCountry", ipData.get("country_name"));
+            event.put("ipCountry", ipData.get("country"));
             event.put("ipLatitude", toDouble(ipData.get("latitude")));
             event.put("ipLongitude", toDouble(ipData.get("longitude")));
             event.put("ipLookupMessage", "IP lookup successful");
@@ -124,22 +125,75 @@ public class LocationServiceImpl implements LocationService {
         }
     }
 
-    @SuppressWarnings("unchecked")
+    // ==================== CHANGE START ====================
+    // Tries ip-api.com first (45 req/min, no signup, reliable for Indian IPs),
+    // then falls back to ipapi.co. Both are normalized to the same keys:
+    // city, region, country, latitude, longitude.
     private Map<String, Object> lookupIpLocation(String ip) {
         if (!isPublicIp(ip)) {
             return null;
         }
 
+        Map<String, Object> result = lookupFromIpApiCom(ip);
+        if (result != null) {
+            return result;
+        }
+        return lookupFromIpApiCo(ip);
+    }
+
+    // Primary: ip-api.com (HTTP on the free plan).
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> lookupFromIpApiCom(String ip) {
         try {
-            return restTemplate.getForObject(
-                    "https://ipapi.co/{ip}/json/",
+            Map<String, Object> data = restTemplate.getForObject(
+                    "http://ip-api.com/json/{ip}"
+                            + "?fields=status,country,regionName,city,lat,lon",
                     Map.class,
                     ip
             );
+
+            if (data == null || !"success".equals(data.get("status"))) {
+                return null;
+            }
+
+            Map<String, Object> normalized = new LinkedHashMap<>();
+            normalized.put("city", data.get("city"));
+            normalized.put("region", data.get("regionName"));
+            normalized.put("country", data.get("country"));
+            normalized.put("latitude", data.get("lat"));
+            normalized.put("longitude", data.get("lon"));
+            return normalized;
         } catch (RestClientException e) {
             return null;
         }
     }
+
+    // Fallback: ipapi.co (HTTPS).
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> lookupFromIpApiCo(String ip) {
+        try {
+            Map<String, Object> data = restTemplate.getForObject(
+                    "https://ipapi.co/{ip}/json/",
+                    Map.class,
+                    ip
+            );
+
+            if (data == null || Boolean.TRUE.equals(data.get("error"))) {
+                return null;
+            }
+
+            Map<String, Object> normalized = new LinkedHashMap<>();
+            normalized.put("city", data.get("city"));
+            normalized.put("region", data.get("region"));
+            normalized.put("country", data.get("country_name"));
+            normalized.put("latitude", data.get("latitude"));
+            normalized.put("longitude", data.get("longitude"));
+            return normalized;
+        } catch (RestClientException e) {
+            return null;
+        }
+    }
+    // ==================== CHANGE END ====================
 
     private boolean isPublicIp(String ip) {
         if (ip == null || ip.isBlank()) {
