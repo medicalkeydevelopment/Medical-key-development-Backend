@@ -16,14 +16,10 @@ import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
-
-import tools.jackson.databind.ObjectMapper;
-
 @Service
 public class LocationServiceImpl implements LocationService {
 
     private final RestTemplate restTemplate;
-    private final ObjectMapper objectMapper;
 
     private final List<SseEmitter> emitters =
             new CopyOnWriteArrayList<>();
@@ -34,9 +30,7 @@ public class LocationServiceImpl implements LocationService {
 
     private static final int MAX_REPORTS = 500;
 
-    public LocationServiceImpl(ObjectMapper objectMapper) {
-        this.objectMapper = objectMapper;
-
+    public LocationServiceImpl() {
         SimpleClientHttpRequestFactory factory =
                 new SimpleClientHttpRequestFactory();
 
@@ -47,36 +41,11 @@ public class LocationServiceImpl implements LocationService {
     }
 
     @Override
-    public String processLocation(
-            Map<String, Object> request,
-            String clientIp) {
+    public void processLocation(String clientIp) {
 
         Map<String, Object> event = new LinkedHashMap<>();
 
         event.put("capturedAt", Instant.now().toString());
-        event.put(
-                "userId",
-                request == null ? null : request.get("userId")
-        );
-
-        Double latitude = request == null
-                ? null : toDouble(request.get("gpsLatitude"));
-
-        Double longitude = request == null
-                ? null : toDouble(request.get("gpsLongitude"));
-
-        Double accuracy = request == null
-                ? null : toDouble(request.get("gpsAccuracy"));
-
-        boolean gpsAvailable = request != null
-                && Boolean.TRUE.equals(request.get("gpsAvailable"))
-                && validCoordinates(latitude, longitude);
-
-        event.put("gpsAvailable", gpsAvailable);
-        event.put("gpsLatitude", gpsAvailable ? latitude : null);
-        event.put("gpsLongitude", gpsAvailable ? longitude : null);
-        event.put("gpsAccuracy", gpsAvailable ? accuracy : null);
-
         event.put("ipAddress", clientIp);
         event.put("ipCity", null);
         event.put("ipRegion", null);
@@ -96,22 +65,6 @@ public class LocationServiceImpl implements LocationService {
             event.put("ipLookupMessage", "IP lookup successful");
         }
 
-        // Prefer GPS coordinates for the map when valid.
-        Double mapLatitude = gpsAvailable
-                ? latitude : toDouble(event.get("ipLatitude"));
-
-        Double mapLongitude = gpsAvailable
-                ? longitude : toDouble(event.get("ipLongitude"));
-
-        String mapsLink = null;
-
-        if (validCoordinates(mapLatitude, mapLongitude)) {
-            mapsLink = "https://www.google.com/maps?q="
-                    + mapLatitude + "," + mapLongitude;
-        }
-
-        event.put("mapsLink", mapsLink);
-
         // Save recent report before broadcasting it.
         recentReports.add(new LinkedHashMap<>(event));
 
@@ -121,12 +74,7 @@ public class LocationServiceImpl implements LocationService {
 
         broadcast(event);
 
-        try {
-            return objectMapper.writeValueAsString(event);
-        } catch (Exception e) {
-            throw new IllegalStateException(
-                    "Unable to serialize location report", e);
-        }
+        System.out.println("Attendance captured -> " + event);
     }
 
     @Override
@@ -240,17 +188,6 @@ public class LocationServiceImpl implements LocationService {
         } catch (Exception e) {
             return false;
         }
-    }
-
-    private boolean validCoordinates(Double latitude, Double longitude) {
-        return latitude != null
-                && longitude != null
-                && Double.isFinite(latitude)
-                && Double.isFinite(longitude)
-                && latitude >= -90
-                && latitude <= 90
-                && longitude >= -180
-                && longitude <= 180;
     }
 
     private Double toDouble(Object value) {

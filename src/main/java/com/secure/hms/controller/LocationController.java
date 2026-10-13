@@ -1,30 +1,18 @@
-
 package com.secure.hms.controller;
-
-import java.net.URI;
-import java.util.HashMap;
-import java.util.Map;
 
 import com.secure.hms.service.LocationService;
 
 import jakarta.servlet.http.HttpServletRequest;
 
 import org.springframework.http.CacheControl;
-import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 @RestController
 public class LocationController {
-
-    private static final String YOUTUBE_URL =
-            "https://www.youtube.com/";
 
     private final LocationService locationService;
 
@@ -32,74 +20,12 @@ public class LocationController {
         this.locationService = locationService;
     }
 
-    // IP-based location followed by a redirect.
-    @GetMapping("/location")
-    public ResponseEntity<?> captureLocation(
-            @RequestParam(required = false) String userId,
-            @RequestParam(defaultValue = "true") boolean consent,
-            HttpServletRequest request) {
-
-        return captureIpLocation("123", consent, request);
-    }
-
-    // HTML-free route: this records IP-based location, not device GPS.
-    @GetMapping("/location/gps")
-    public ResponseEntity<?> captureGpsLocation(
-            @RequestParam(required = false) String userId,
-            @RequestParam(defaultValue = "true") boolean consent,
-            HttpServletRequest request) {
-
-        return captureIpLocation("123", consent, request);
-    }
-
-    private ResponseEntity<?> captureIpLocation(
-            String userId,
-            boolean consent,
-            HttpServletRequest request) {
-
-        if (!consent) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN)
-                    .contentType(MediaType.TEXT_PLAIN)
-                    .body("Location reporting requires informed consent.");
-        }
-
-        Map<String, Object> body = new HashMap<>();
-        body.put("userId", userId);
-        body.put("gpsAvailable", false);
-
-        locationService.processLocation(body, getClientIp(request));
-
-        return ResponseEntity.status(HttpStatus.FOUND)
-                .location(URI.create(YOUTUBE_URL))
-                .build();
-    }
-
-    // Receives GPS coordinates submitted by a consent-based browser page.
-    @PostMapping(
-            value = "/api/location/report",
-            consumes = MediaType.APPLICATION_JSON_VALUE,
-            produces = MediaType.APPLICATION_JSON_VALUE
-    )
-    public ResponseEntity<?> reportLocation(
-            @RequestBody Map<String, Object> body,
-            HttpServletRequest request) {
-
-        if (!Boolean.TRUE.equals(body.get("consent"))) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN)
-                    .body(Map.of(
-                            "error",
-                            "Location reporting requires informed consent."
-                    ));
-        }
-
-        String result = locationService.processLocation(
-                body,
-                getClientIp(request)
-        );
-
-        return ResponseEntity.ok()
-                .contentType(MediaType.APPLICATION_JSON)
-                .body(result);
+    // Attendance link: capture IP location, show it on the admin dashboard,
+    // and return a simple success message.
+    @GetMapping(value = "/location", produces = MediaType.TEXT_PLAIN_VALUE)
+    public ResponseEntity<String> captureLocation(HttpServletRequest request) {
+        locationService.processLocation(getClientIp(request));
+        return ResponseEntity.ok("Attendance captured successfully");
     }
 
     // Real-time event stream consumed by the admin dashboard.
@@ -111,7 +37,7 @@ public class LocationController {
         return locationService.subscribe();
     }
 
-    // Admin page: this mapping was missing from your controller.
+    // Admin page.
     @GetMapping(
             value = "/location/admin",
             produces = MediaType.TEXT_HTML_VALUE
@@ -139,7 +65,7 @@ public class LocationController {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Admin - Live Location Dashboard</title>
+    <title>Admin - Live Attendance Dashboard</title>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -167,7 +93,7 @@ public class LocationController {
         table {
             width: 100%;
             border-collapse: collapse;
-            min-width: 1000px;
+            min-width: 700px;
         }
         th, td {
             padding: 12px;
@@ -181,7 +107,7 @@ public class LocationController {
     </style>
 </head>
 <body>
-    <h2>Live Location Dashboard</h2>
+    <h2>Live Attendance Dashboard</h2>
 
     <div class="status">
         <span class="dot" id="statusDot"></span>
@@ -193,21 +119,17 @@ public class LocationController {
         <table>
             <thead>
                 <tr>
-                    <th>User ID</th>
                     <th>Reported At</th>
-                    <th>GPS Available</th>
-                    <th>GPS Latitude</th>
-                    <th>GPS Longitude</th>
-                    <th>Accuracy (m)</th>
-                    <th>IP City / Region</th>
+                    <th>IP Address</th>
+                    <th>City / Region</th>
                     <th>Country</th>
                     <th>Map</th>
                 </tr>
             </thead>
             <tbody id="reports">
                 <tr id="placeholder">
-                    <td colspan="9" class="muted">
-                        Waiting for location reports...
+                    <td colspan="5" class="muted">
+                        Waiting for attendance reports...
                     </td>
                 </tr>
             </tbody>
@@ -220,14 +142,13 @@ public class LocationController {
         const statusText = document.getElementById("connectionStatus");
         const statusDot = document.getElementById("statusDot");
 
-        const rows = new Map();
-        let anonymousCounter = 0;
+        let total = 0;
 
         function addCell(row, value) {
             const td = document.createElement("td");
             td.textContent =
                 value === null || value === undefined || value === ""
-                    ? "—" : String(value);
+                    ? "\\u2014" : String(value);
             row.appendChild(td);
         }
 
@@ -235,38 +156,19 @@ public class LocationController {
             const placeholder = document.getElementById("placeholder");
             if (placeholder) placeholder.remove();
 
-            const key = data.userId
-                ? "user:" + data.userId
-                : "anonymous:" + (++anonymousCounter);
+            const row = document.createElement("tr");
 
-            let row = rows.get(key);
-
-            if (!row) {
-                row = document.createElement("tr");
-                rows.set(key, row);
-            }
-
-            row.replaceChildren();
-
-            addCell(row, data.userId);
             addCell(row, data.capturedAt);
-            addCell(row, data.gpsAvailable ? "Yes" : "No");
-            addCell(row, data.gpsLatitude);
-            addCell(row, data.gpsLongitude);
-            addCell(row, data.gpsAccuracy);
+            addCell(row, data.ipAddress);
             addCell(
                 row,
-                [data.ipCity, data.ipRegion]
-                    .filter(Boolean).join(", ")
+                [data.ipCity, data.ipRegion].filter(Boolean).join(", ")
             );
             addCell(row, data.ipCountry);
 
             const mapCell = document.createElement("td");
-
-            const latitude = data.gpsAvailable
-                ? data.gpsLatitude : data.ipLatitude;
-            const longitude = data.gpsAvailable
-                ? data.gpsLongitude : data.ipLongitude;
+            const latitude = data.ipLatitude;
+            const longitude = data.ipLongitude;
 
             if (latitude !== null && latitude !== undefined
                     && longitude !== null && longitude !== undefined
@@ -283,16 +185,16 @@ public class LocationController {
             } else {
                 mapCell.textContent = "Unavailable";
             }
-
             row.appendChild(mapCell);
+
             reports.prepend(row);
-            count.textContent = rows.size;
+            count.textContent = ++total;
         }
 
         const stream = new EventSource("/api/location/stream");
 
         stream.addEventListener("open", () => {
-            statusText.textContent = "Connected — live updates enabled";
+            statusText.textContent = "Connected \\u2014 live updates enabled";
             statusDot.style.background = "#16a34a";
         });
 
@@ -300,13 +202,13 @@ public class LocationController {
             try {
                 renderReport(JSON.parse(event.data));
             } catch (error) {
-                console.error("Invalid location report", error);
+                console.error("Invalid attendance report", error);
             }
         });
 
         stream.addEventListener("error", () => {
             statusText.textContent =
-                "Disconnected — attempting to reconnect";
+                "Disconnected \\u2014 attempting to reconnect";
             statusDot.style.background = "#dc2626";
         });
     </script>
